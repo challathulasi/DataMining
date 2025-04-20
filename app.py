@@ -1,107 +1,128 @@
 import gradio as gr
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import seaborn as sns
+import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split, GridSearchCV
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
-from sklearn.tree import DecisionTreeClassifier
 from xgboost import XGBClassifier
+from sklearn.inspection import permutation_importance
 from imblearn.combine import SMOTEENN
 import warnings
-
 warnings.filterwarnings("ignore")
 
-def churn_pipeline(file):
-    df = pd.read_csv(file.name)
+# Store uploaded dataset globally
+global_df = {}
 
-    # Preprocessing
+def load_dataset(file):
+    df = pd.read_csv(file.name)
     df['TotalCharges'].replace(" ", 0, inplace=True)
     df['TotalCharges'] = df['TotalCharges'].astype(float)
     df['SeniorCitizen'] = df['SeniorCitizen'].apply(lambda x: 'No' if x == 0 else 'Yes')
     df.rename(columns={'InternetService': 'InternetServiceTypes'}, inplace=True)
     df['InternetService'] = df['InternetServiceTypes'].apply(lambda x: 'Yes' if x in ['DSL', 'Fiber optic'] else 'No')
     df.drop(columns=['customerID'], inplace=True)
+    global_df['df'] = df
+    return f"✅ Dataset loaded with {df.shape[0]} rows and {df.shape[1]} columns.", gr.update(choices=df.select_dtypes(include=['int64', 'float64']).columns.tolist(), value=None)
 
-    df_dummy = pd.get_dummies(df, dtype='int', drop_first=True)
-    X = df_dummy.drop(columns=['Churn_Yes'])
-    y = df_dummy['Churn_Yes']
+def show_eda_plot(column):
+    if not column or column not in global_df['df'].columns:
+        return None  # Avoid plotting if invalid column
+    df = global_df['df']
+    fig, ax = plt.subplots()
+    sns.boxplot(x=df['Churn'], y=df[column], ax=ax)
+    ax.set_title(f'{column} vs Churn')
+    return fig
 
-    sm = SMOTEENN()
+
+def run_model(model_name):
+    df = global_df['df']
+    df = pd.get_dummies(df, drop_first=True, dtype=int)
+    X = df.drop(columns=['Churn_Yes'])
+    y = df['Churn_Yes']
+
+    sm = SMOTEENN(random_state=42)
     X_resampled, y_resampled = sm.fit_resample(X, y)
+    X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2, random_state=42)
 
-    X_train, X_test, y_train, y_test = train_test_split(X_resampled, y_resampled, test_size=0.2)
-
-    models = {
-        "Decision Tree": {
-            "model": DecisionTreeClassifier(random_state=100),
-            "param_grid": {"max_depth": [6], "min_samples_leaf": [8]}
-        },
-        "Random Forest": {
-            "model": RandomForestClassifier(random_state=100),
-            "param_grid": {"n_estimators": [100], "max_depth": [10]}
-        },
-        "XGBoost": {
-            "model": XGBClassifier(random_state=100, use_label_encoder=False, eval_metric='logloss'),
-            "param_grid": {"learning_rate": [0.1], "max_depth": [5]}
-        },
-        "AdaBoost": {
-            "model": AdaBoostClassifier(random_state=100),
-            "param_grid": {"n_estimators": [100], "learning_rate": [0.1]}
-        },
-        "Logistic Regression": {
-            "model": LogisticRegression(solver='liblinear', random_state=100),
-            "param_grid": {"C": [1], "penalty": ['l2']}
-        },
-        "KNN": {
-            "model": KNeighborsClassifier(),
-            "param_grid": {"n_neighbors": [5], "metric": ['euclidean']}
-        },
-        "SVM": {
-            "model": SVC(probability=True, random_state=100),
-            "param_grid": {"C": [1], "kernel": ['linear'], "gamma": ['scale']}
-        }
+    model_dict = {
+        "Decision Tree": (DecisionTreeClassifier(random_state=100), {"max_depth": [6, 10], "min_samples_leaf": [8, 12]}),
+        "Random Forest": (RandomForestClassifier(random_state=100), {"n_estimators": [100], "max_depth": [10]}),
+        "XGBoost": (XGBClassifier(random_state=100, use_label_encoder=False, eval_metric="logloss"), {"learning_rate": [0.1], "max_depth": [3]}),
+        "AdaBoost": (AdaBoostClassifier(random_state=100), {"n_estimators": [100], "learning_rate": [0.1]}),
+        "Logistic Regression": (LogisticRegression(solver='liblinear', random_state=100), {"C": [1], "penalty": ['l2']}),
+        "KNN": (KNeighborsClassifier(), {"n_neighbors": [5], "metric": ['euclidean']})
     }
 
-    results = []
+    model, param_grid = model_dict[model_name]
+    grid_search = GridSearchCV(model, param_grid, cv=3, scoring='roc_auc')
+    grid_search.fit(X_train, y_train)
+    best_model = grid_search.best_estimator_
 
-    for model_name, model_details in models.items():
-        grid_search = GridSearchCV(model_details["model"], model_details["param_grid"], cv=5, scoring='roc_auc')
-        grid_search.fit(X_train, y_train)
-        best_model = grid_search.best_estimator_
-        y_pred = best_model.predict(X_test)
+    y_pred = best_model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    prec = precision_score(y_test, y_pred)
+    recall = recall_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred)
 
-        acc = accuracy_score(y_test, y_pred)
-        prec = precision_score(y_test, y_pred)
-        rec = recall_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred)
-        matrix = confusion_matrix(y_test, y_pred)
+    metrics = f"""
+### 📊 Model: {model_name}
 
-        result = f"### {model_name}\n"
-        result += f"- **Best Parameters**: {grid_search.best_params_}\n"
-        result += f"- **Accuracy**: {acc:.4f}\n"
-        result += f"- **Precision**: {prec:.4f}\n"
-        result += f"- **Recall**: {rec:.4f}\n"
-        result += f"- **F1 Score**: {f1:.4f}\n"
-        result += f"- **Confusion Matrix**:\n```\n{matrix}\n```\n\n"
-        results.append(result)
+**Best Params**: `{grid_search.best_params_}`  
+**Accuracy**: {acc:.4f}  
+**Precision**: {prec:.4f}  
+**Recall**: {recall:.4f}  
+**F1-Score**: {f1:.4f}  
+    """
 
-    return "\n".join(results)
+    fig_cm, ax_cm = plt.subplots()
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=ax_cm)
+    ax_cm.set_xlabel("Predicted")
+    ax_cm.set_ylabel("Actual")
+    ax_cm.set_title(f"Confusion Matrix - {model_name}")
 
+    fig_imp = None
+    try:
+        result = permutation_importance(best_model, X_test, y_test, n_repeats=10, random_state=42)
+        imp_df = pd.DataFrame({'Feature': X_test.columns, 'Importance': result.importances_mean}).sort_values(by='Importance', ascending=False)
+        fig_imp, ax_imp = plt.subplots(figsize=(10, 6))
+        sns.barplot(x='Importance', y='Feature', data=imp_df.head(10), ax=ax_imp)
+        ax_imp.set_title("Top 10 Important Features")
+    except:
+        pass
 
-# Gradio Interface
-iface = gr.Interface(
-    fn=churn_pipeline,
-    inputs=gr.File(label="Upload Telco Churn CSV"),
-    outputs=gr.Markdown(label="Model Results"),
-    title="Telco Churn Prediction with ML Models",
-    description="Upload the Telco churn dataset (WA_Fn-UseC_-Telco-Customer-Churn.csv) and evaluate multiple ML models with GridSearchCV."
-)
+    return metrics, fig_cm, fig_imp
 
-if __name__ == "__main__":
-    iface.launch()
+# Gradio UI
+with gr.Blocks() as churn_ui:
+    gr.Markdown("# 📈 Telco Customer Churn Prediction with EDA & Model Analysis")
+
+    with gr.Row():
+        file_input = gr.File(label="Upload Telco Churn CSV")
+        load_btn = gr.Button("Load Dataset")
+        output_text = gr.Textbox(label="Status")
+
+    column_dropdown = gr.Dropdown(label="Select Column for EDA", choices=[], interactive=True)
+    eda_output = gr.Plot(label="EDA Plot: Column vs Churn")
+
+    load_btn.click(load_dataset, inputs=file_input, outputs=[output_text, column_dropdown])
+    column_dropdown.change(fn=show_eda_plot, inputs=column_dropdown, outputs=eda_output)
+
+    gr.Markdown("---")
+
+    with gr.Row():
+        model_selector = gr.Dropdown(choices=["Decision Tree", "Random Forest", "XGBoost", "AdaBoost", "Logistic Regression", "KNN", "SVM"], label="Select Model")
+        model_btn = gr.Button("Run Model")
+
+    metrics_output = gr.Markdown()
+    cm_output = gr.Plot()
+    imp_output = gr.Plot()
+
+    model_btn.click(fn=run_model, inputs=model_selector, outputs=[metrics_output, cm_output, imp_output])
+
+churn_ui.launch(share=True)
