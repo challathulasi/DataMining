@@ -77,7 +77,7 @@ imbalanced-learn
 ---
 
 ## 📷 UI Walkthrough
-
+- Hugging Face Link : https://huggingface.co/spaces/Challat/CustomerChurnPrediction
 - Upload the Telco dataset.
 - Select a numeric column to visualize EDA (boxplot vs churn).
 - Choose a machine learning model to evaluate performance.
